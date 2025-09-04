@@ -1,0 +1,10 @@
+{
+  "fixtures": [
+    { "ext_match_id": "NB1-001", "league": "NB I", "home": "Ferencvaros", "away": "Ujpest", "start_time": "2025-09-05T19:30:00" }
+  ],
+  "odds": [
+    { "ext_match_id": "NB1-001", "bookmaker": "BukiA", "selection": "A", "odds": 3.80, "captured_at": "2025-09-03T12:45:00" },
+    { "ext_match_id": "NB1-001", "bookmaker": "BukiB", "selection": "A", "odds": 3.95, "captured_at": "2025-09-03T12:46:00" }
+  ]
+}
+

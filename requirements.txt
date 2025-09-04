@@ -1,0 +1,8 @@
+python-dotenv>=1.0
+SQLAlchemy>=2.0
+psycopg[binary]>=3.2
+fastapi>=0.111
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+numpy
+requests
