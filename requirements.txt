@@ -1,8 +1,7 @@
 python-dotenv>=1.0
 SQLAlchemy>=2.0
-psycopg[binary]>=3.2
+psycopg2-binary==2.9.9
 fastapi>=0.111
 uvicorn[standard]>=0.30
-python-dotenv>=1.0
-numpy
-requests
+numpy>=1.26
+requests>=2.32
