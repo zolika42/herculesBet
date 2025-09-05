@@ -1,28 +1,40 @@
-import subprocess, sys, os
+import os
+import sys
+import subprocess
+from datetime import datetime
 
-def run(cmd):
-    print(f"\n$ {cmd}")
-    res = subprocess.run(cmd, shell=True)
-    if res.returncode != 0:
-        sys.exit(res.returncode)
+def run(modname: str):
+    print(f"[{datetime.utcnow().isoformat()}Z] -> python -m {modname}", flush=True)
+    subprocess.run([sys.executable, "-m", modname], check=True)
 
 def main():
-    # 1) provider ingest – The Odds API
-    try:
-        run("python -m herculesbet.ingest_theodds")
-    except SystemExit as e:
-        raise
-    except Exception as e:
-        print(f"(warn) ingest failed: {e}")
+    # Opcionális: csak akkor próbáljuk az API-Football ingestet, ha van kulcs
+    api_football_key = os.getenv("API_FOOTBALL_KEY", "").strip()
 
-    # 2) modell (Poisson/DC vagy ELO – amit szeretnél)
-    run("python -m herculesbet.run_model_poisson")
+    # 1) The Odds API ingest (biztosan működik nálad)
+    run("herculesbet.ingest_theodds")
 
-    # 3) pick generálás
-    run("python -m herculesbet.generate_picks")
+    # 2) API-Football ingest (ha van kulcsod és be van kötve)
+    if api_football_key:
+        try:
+            run("herculesbet.ingest_apifootball")
+        except Exception as e:
+            print(f"[WARN] ingest_apifootball skipped with error: {e}", flush=True)
 
-    print("\n✔ pipeline done.")
+    # 3) Modellek
+    run("herculesbet.run_model_poisson")
+
+    # 4) Picks generálás
+    run("herculesbet.generate_picks")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+        print(f"[{datetime.utcnow().isoformat()}Z] DONE", flush=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] step failed: {e}", flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] unexpected: {e}", flush=True)
+        sys.exit(1)
 
