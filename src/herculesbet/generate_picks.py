@@ -1,46 +1,74 @@
 # src/herculesbet/generate_picks.py
-from __future__ import annotations
-
 import os
-from datetime import timedelta
+from typing import Optional
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from .db import SessionLocal
 
-from .db import get_engine, SessionLocal
+# -----------------------------
+# Env paramok
+# -----------------------------
+def _get_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
 
+def _get_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None or val == "":
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
 
-# ---- Konfiguráció környezeti változókból (ésszerű defaultokkal) ----------------
+def _get_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    v = val.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return default
 
-EDGE_MIN = float(os.getenv("MIN_EDGE", "0.02"))            # minimum elvárt edge
-KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))  # Kelly-szorzó
-LOOKBACK_HOURS = int(os.getenv("ODDS_LOOKBACK_HOURS", "48")) # visszatekintés oddsra
-UPCOMING_ONLY = os.getenv("UPCOMING_ONLY", "true").lower() in ("1", "true", "yes")
-UPCOMING_GRACE_MIN = int(os.getenv("UPCOMING_GRACE_MIN", "15"))  # kezdés után meddig játszható
+EDGE_MIN = _get_float("MIN_EDGE", 0.02)
+KELLY_FRACTION = _get_float("KELLY_FRACTION", 0.25)
+UPCOMING_ONLY = _get_bool("UPCOMING_ONLY", True)
+UPCOMING_GRACE_MIN = _get_int("UPCOMING_GRACE_MIN", 15)   # meccs kezdéséhez képest ennyivel “hátra” még ok
+LOOKBACK_HOURS = _get_int("LOOKBACK_HOURS", 48)           # odds snapshot lookback ablak
 
-
-# ---- Mag a beszúráshoz: közvetlenül edge_picks-be írunk -------------------------
-
-SQL_INSERT_EDGEPICKS = text(
-    f"""
+# -----------------------------
+# SQL (bind paramokkal!)
+# -----------------------------
+SQL_UPSERT = text(
+    """
 WITH last_run AS (
     SELECT MAX(id) AS rid
     FROM model_runs
 ),
 upcoming AS (
+    -- Ha UPCOMING_ONLY = FALSE, akkor engedjünk át mindent (a WHERE első ága true),
+    -- egyébként csak a még játszható meccseket:
     SELECT m.id AS match_id
     FROM matches m
-    {"WHERE m.start_time > now() - interval '{UPCOMING_GRACE_MIN} minutes'" if UPCOMING_ONLY else ""}
+    WHERE (:upcoming_only = FALSE)
+       OR (m.start_time > now() - make_interval(mins => :grace_min))
 ),
 best_odds AS (
-    -- A legjobb elérhető odds + a hozzá tartozó bookmaker a lookback ablakból
+    -- Legjobb odds + a hozzá tartozó bookmaker a lookback ablakból
     SELECT DISTINCT ON (o.match_id, o.selection)
         o.match_id,
         o.selection,
         o.bookmaker_id,
         o.odds AS offered_odds
     FROM odds_snapshots o
-    WHERE o.captured_at > now() - interval '{LOOKBACK_HOURS} hours'
+    WHERE o.captured_at > now() - make_interval(hours => :lookback_hours)
       AND o.market IN ('1X2', 'h2h')
     ORDER BY o.match_id, o.selection, o.odds DESC, o.captured_at DESC
 ),
@@ -68,7 +96,7 @@ candidates AS (
         (bo.offered_odds * pr.prob - 1.0) AS edge_raw
     FROM probs pr
     JOIN best_odds bo USING (match_id, selection)
-    {"JOIN upcoming u ON u.match_id = pr.match_id" if UPCOMING_ONLY else ""}
+    JOIN upcoming u ON u.match_id = pr.match_id
 )
 INSERT INTO edge_picks
     (match_id, market, selection, bookmaker_id,
@@ -102,33 +130,24 @@ RETURNING
 """
 )
 
-
-def run_once(session: Session) -> int:
-    """
-    Beszúrja a friss edge pickeket közvetlenül az edge_picks táblába.
-    Visszaadja a beszúrt sorok számát.
-    """
-    res = session.execute(
-        SQL_INSERT_EDGEPICKS,
-        {
-            "kelly": KELLY_FRACTION,
-            "edge_min": EDGE_MIN,
-        },
-    )
+def run_once(session) -> int:
+    params = {
+        "kelly": KELLY_FRACTION,
+        "edge_min": EDGE_MIN,
+        "upcoming_only": UPCOMING_ONLY,
+        "grace_min": UPCOMING_GRACE_MIN,
+        "lookback_hours": LOOKBACK_HOURS,
+    }
+    res = session.execute(SQL_UPSERT, params)
     rows = res.fetchall()
     return len(rows)
 
-
-def main() -> None:
-    engine = get_engine()
+def main():
     inserted = 0
-    with SessionLocal(bind=engine) as session:
-        with session.begin():
-            inserted = run_once(session)
-
+    with SessionLocal() as session:
+        inserted = run_once(session)
+        session.commit()
     print(f"✔ Picks upsert done (inserted ~{inserted} rows)")
-
 
 if __name__ == "__main__":
     main()
-
