@@ -1,6 +1,7 @@
+import os
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
-from .db import SessionLocal
+from sqlalchemy import func, desc, text
+from .db import SessionLocal, get_engine
 from .models import Match, OddsSnapshot, Probability, EdgePick, Bookmaker
 from .utils.prob import remove_overround_1x2
 from .utils.kelly import fractional_kelly
@@ -110,4 +111,68 @@ def main():
 
     db.commit(); db.close()
     print(f"✔ picks created: {created} (skipped: {skipped})")
+
+def insert_picks_from_probs():
+    edge_min = float(os.getenv("MIN_EDGE", "0.02"))
+    kelly = float(os.getenv("KELLY_FRACTION", "0.25"))
+    bankroll = float(os.getenv("BANKROLL_UNITS", "1.0"))  # tartsd env-ben, ha szeretnéd
+
+    sql = f"""
+    WITH last_run AS (
+      SELECT MAX(id) AS rid FROM model_runs
+    ),
+    best_odds AS (
+      SELECT match_id, selection, MAX(odds) AS offered_odds
+      FROM odds_snapshots
+      WHERE captured_at > now() - interval '48 hours'
+        AND market IN ('1X2','h2h')
+      GROUP BY match_id, selection
+    ),
+    probs AS (
+      SELECT p.model_run_id, p.match_id, p.market, p.selection, p.prob, p.fair_odds
+      FROM probabilities p, last_run
+      WHERE p.model_run_id = rid AND p.market IN ('1X2','h2h')
+    ),
+    candidates AS (
+      SELECT pr.model_run_id,
+             pr.match_id,
+             COALESCE(pr.market,'1X2') AS market,
+             pr.selection,
+             pr.prob,
+             pr.fair_odds,
+             bo.offered_odds,
+             (bo.offered_odds * pr.prob - 1.0) AS edge_raw
+      FROM probs pr
+      JOIN best_odds bo USING (match_id, selection)
+    )
+    INSERT INTO picks (match_id, model_run_id, market, selection,
+                       prob, fair_odds, offered_odds, edge, kelly_frac, stake_units, created_at)
+    SELECT c.match_id,
+           c.model_run_id,
+           c.market,
+           c.selection,
+           c.prob,
+           c.fair_odds,
+           c.offered_odds,
+           c.edge_raw AS edge,
+           GREATEST(0, LEAST(1, {kelly} * (c.edge_raw / NULLIF(c.offered_odds - 1.0,0)))) AS kelly_frac,
+           ({bankroll} * GREATEST(0, LEAST(1, {kelly} * (c.edge_raw / NULLIF(c.offered_odds - 1.0,0))))) AS stake_units,
+           now()
+    FROM candidates c
+    WHERE c.edge_raw >= {edge_min}
+      AND c.offered_odds > 1.0
+    ON CONFLICT DO NOTHING;
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        res = conn.execute(text(sql))
+    return res.rowcount if hasattr(res, "rowcount") else None
+
+if __name__ == "__main__":
+    # ... a meglévő kód után:
+    try:
+        n = insert_picks_from_probs()
+        print(f"✔ Picks upsert done (inserted ~{n} rows)")
+    except Exception as e:
+        print(f"[WARN] picks insert skipped with error: {e}")
 
