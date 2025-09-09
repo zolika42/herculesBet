@@ -21,3 +21,5 @@ def get_db():
     finally:
         db.close()
 
+# Back-compat alias a régi kódnak
+engine = _engine
